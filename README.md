@@ -1,6 +1,6 @@
 # arrow-to-json
 
-A native Node.js addon that converts [Apache Arrow](https://arrow.apache.org/) IPC bytes to JSON. Written in Rust using [napi-rs](https://napi.rs/) for maximum throughput — typically **5-7x faster** than parsing with the JavaScript `apache-arrow` library and serializing with `JSON.stringify`.
+A native Node.js addon that converts [Apache Arrow](https://arrow.apache.org/) IPC bytes to JSON. Written in Rust using [napi-rs](https://napi.rs/) for maximum throughput — typically **~20x faster** than parsing with the JavaScript `apache-arrow` library and serializing with `JSON.stringify`.
 
 ## Install
 
@@ -19,23 +19,38 @@ const rows: unknown[] = JSON.parse(json)
 
 The function accepts a `Buffer` containing Arrow IPC bytes (file or streaming format, auto-detected) and returns a JSON string. Each element in the resulting array is a row object with column names as keys.
 
+### Profiling with `arrowIpcToJsonTimed`
+
+```ts
+import { arrowIpcToJsonTimed } from 'arrow-to-json'
+
+const result = arrowIpcToJsonTimed(arrowBytes)
+// result.json       — JSON string (same as arrowIpcToJson)
+// result.ipcParseUs — microseconds spent parsing IPC bytes
+// result.jsonWriteUs — microseconds spent writing JSON
+// result.totalUs    — total microseconds (Rust wall clock)
+// result.rows       — number of rows decoded
+// result.jsonBytes  — byte length of the JSON string
+```
+
 ## Supported Arrow types
 
-| Arrow type                                                    | JSON representation                |
-| ------------------------------------------------------------- | ---------------------------------- |
-| `Boolean`                                                     | `true` / `false`                   |
-| `Int8` .. `Int32`, `UInt8` .. `UInt32`                        | number                             |
-| `Int64` / `UInt64`                                            | number if ≤ 2^53, string otherwise |
-| `Float16` / `Float32` / `Float64`                             | number (NaN/Infinity → `null`)     |
-| `Utf8` / `LargeUtf8`                                          | string                             |
-| `Binary` / `LargeBinary`                                      | array of byte values               |
-| `List` / `LargeList` / `FixedSizeList`                        | array (recursive)                  |
-| `Struct`                                                      | object (recursive)                 |
-| `Map<Utf8, *>`                                                | object (`{key: value}`)            |
-| `Map<non-Utf8, *>`                                            | array of `{key, value}` objects    |
-| `Dictionary<*, *>`                                            | resolved value (recursive)         |
-| `Timestamp`, `Date32/64`, `Time32/64`, `Duration`, `Interval` | string (cast to Utf8)              |
-| Null values                                                   | omitted from output objects        |
+| Arrow type | JSON representation |
+| --- | --- |
+| `Boolean` | `true` / `false` |
+| `Int8` .. `Int32`, `UInt8` .. `UInt32` | number |
+| `Int64` / `UInt64` | number if ≤ 2^53, string otherwise |
+| `Float16` / `Float32` / `Float64` | number (`NaN` / `Infinity` → `null`) |
+| `Utf8` / `LargeUtf8` | string (JSON-escaped) |
+| `Binary` / `LargeBinary` | array of byte values |
+| `List` / `LargeList` / `FixedSizeList` | array (recursive) |
+| `Struct` | object (recursive) |
+| `Map<Utf8, *>` | object (`{key: value}`) |
+| `Map<non-Utf8, *>` | array of `{key, value}` objects |
+| `Dictionary<*, *>` | resolved value (recursive) |
+| `Timestamp`, `Date32/64`, `Time32/64`, `Duration`, `Interval` | string (cast to Utf8) |
+| Null values | omitted from output objects |
+| Empty `Map` | omitted from output objects |
 
 ## API
 
@@ -43,13 +58,34 @@ The function accepts a `Buffer` containing Arrow IPC bytes (file or streaming fo
 
 Converts Arrow IPC bytes to a JSON array string.
 
-**Parameters:**
+- **data** — `Buffer` containing Arrow IPC bytes (file or stream format)
+- **Returns** — JSON string representing an array of row objects
+- **Throws** — if the input is not valid Arrow IPC data
 
-- `data` — `Buffer` containing Arrow IPC bytes
+### `arrowIpcToJsonTimed(data: Buffer): TimedResult`
 
-**Returns:** JSON string representing an array of row objects
+Same conversion as `arrowIpcToJson`, but returns a `TimedResult` with Rust-internal timing breakdown.
 
-**Throws:** if the input is not valid Arrow IPC data
+```ts
+interface TimedResult {
+  json: string       // the JSON string
+  ipcParseUs: number // IPC parsing time (µs)
+  jsonWriteUs: number // JSON serialization time (µs)
+  totalUs: number    // total Rust wall-clock time (µs)
+  rows: number       // number of rows decoded
+  jsonBytes: number  // byte length of JSON output
+}
+```
+
+## Performance
+
+The Rust implementation uses several optimizations for throughput:
+
+- **Direct JSON writing** — JSON is written directly to a pre-allocated `String` buffer, bypassing any intermediate value tree.
+- **Pre-downcast columns** — Arrow column types are resolved once per batch into a `ColWriter` enum, eliminating per-cell dynamic dispatch and `downcast_ref` in the hot loop.
+- **Specialized fast paths** — Common column patterns (`Map<Utf8, Utf8>`, `List<Int64>`) have dedicated write functions that skip generic dispatch.
+- **Fast number formatting** — Uses [`itoa`](https://crates.io/crates/itoa) and [`ryu`](https://crates.io/crates/ryu) for integer and float serialization.
+- **Pre-computed column metadata** — JSON-escaped column keys and skip-check flags are computed once per batch.
 
 ## Development
 
