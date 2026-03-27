@@ -33,7 +33,10 @@ fn array_value_at(arr: &dyn Array, row: usize) -> Value {
     DataType::Int16 => num_val!(arr, arrow_array::Int16Array, row),
     DataType::Int32 => num_val!(arr, arrow_array::Int32Array, row),
     DataType::Int64 => {
-      let a = arr.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+      let a = arr
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
       let v = a.value(row);
       if v.unsigned_abs() <= (1u64 << 53) {
         Value::Number(serde_json::Number::from(v))
@@ -125,19 +128,17 @@ fn array_value_at(arr: &dyn Array, row: usize) -> Value {
     | DataType::Time32(_)
     | DataType::Time64(_)
     | DataType::Duration(_)
-    | DataType::Interval(_) => {
-      match arrow_cast::cast(arr, &DataType::Utf8) {
-        Ok(casted) => {
-          let sa = casted.as_any().downcast_ref::<StringArray>().unwrap();
-          if sa.is_null(row) {
-            Value::Null
-          } else {
-            Value::String(sa.value(row).to_owned())
-          }
+    | DataType::Interval(_) => match arrow_cast::cast(arr, &DataType::Utf8) {
+      Ok(casted) => {
+        let sa = casted.as_any().downcast_ref::<StringArray>().unwrap();
+        if sa.is_null(row) {
+          Value::Null
+        } else {
+          Value::String(sa.value(row).to_owned())
         }
-        Err(_) => Value::String(format!("<unsupported:{:?}>", arr.data_type())),
       }
-    }
+      Err(_) => Value::String(format!("<unsupported:{:?}>", arr.data_type())),
+    },
     _ => Value::String(format!("<unsupported:{:?}>", arr.data_type())),
   }
 }
@@ -237,10 +238,7 @@ fn map_value(arr: &dyn Array, entry_field: &Field, row: usize) -> Value {
 fn dict_value(arr: &dyn Array, row: usize) -> Value {
   macro_rules! try_dict {
     ($arr:expr, $key_ty:ty, $row:expr) => {
-      if let Some(da) = $arr
-        .as_any()
-        .downcast_ref::<DictionaryArray<$key_ty>>()
-      {
+      if let Some(da) = $arr.as_any().downcast_ref::<DictionaryArray<$key_ty>>() {
         let key = da.keys().value($row) as usize;
         return array_value_at(da.values().as_ref(), key);
       }
@@ -310,8 +308,8 @@ pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<String> {
     let reader = FileReader::try_new(cursor, None)
       .map_err(|e| napi::Error::from_reason(format!("Failed to read Arrow IPC file: {e}")))?;
     for batch_result in reader {
-      let batch = batch_result
-        .map_err(|e| napi::Error::from_reason(format!("Failed to read batch: {e}")))?;
+      let batch =
+        batch_result.map_err(|e| napi::Error::from_reason(format!("Failed to read batch: {e}")))?;
       all_rows.extend(record_batch_to_rows(&batch));
     }
   } else {
@@ -319,8 +317,8 @@ pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<String> {
     let reader = StreamReader::try_new(cursor, None)
       .map_err(|e| napi::Error::from_reason(format!("Failed to read Arrow IPC stream: {e}")))?;
     for batch_result in reader {
-      let batch = batch_result
-        .map_err(|e| napi::Error::from_reason(format!("Failed to read batch: {e}")))?;
+      let batch =
+        batch_result.map_err(|e| napi::Error::from_reason(format!("Failed to read batch: {e}")))?;
       all_rows.extend(record_batch_to_rows(&batch));
     }
   }
