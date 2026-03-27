@@ -1,1 +1,1 @@
-export * from '@napi-rs/package-template-wasm32-wasi'
+export * from 'arrow-to-json-wasm32-wasi'
