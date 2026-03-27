@@ -24,7 +24,7 @@ import {
 } from 'apache-arrow'
 import test from 'ava'
 
-import { arrowIpcToJson, arrowIpcToJsonColumns, arrowIpcToJsonColumnsTimed, arrowIpcToJsonTimed } from '../index'
+import { arrowIpcToJson, arrowIpcToJsonColumns } from '../index'
 
 function makeIpcStream(table: Table): Buffer {
   return Buffer.from(tableToIPC(table, 'stream'))
@@ -44,10 +44,6 @@ function parse(buf: Buffer): Array<Record<string, any>> {
 
 test('arrowIpcToJson is a function', (t) => {
   t.is(typeof arrowIpcToJson, 'function')
-})
-
-test('arrowIpcToJsonTimed is a function', (t) => {
-  t.is(typeof arrowIpcToJsonTimed, 'function')
 })
 
 test('throws on invalid input', (t) => {
@@ -614,42 +610,6 @@ test('decodes OSM-like table with all column types', (t) => {
 })
 
 // ---------------------------------------------------------------------------
-// arrowIpcToJsonTimed
-// ---------------------------------------------------------------------------
-
-test('arrowIpcToJsonTimed returns timing breakdown', (t) => {
-  const table = new Table({
-    id: vectorFromArray(Int32Array.from([1, 2, 3])),
-    name: vectorFromArray(['a', 'b', 'c']),
-  })
-  const timed = arrowIpcToJsonTimed(makeIpcStream(table))
-
-  t.is(typeof timed.json, 'string')
-  t.is(typeof timed.ipcParseUs, 'number')
-  t.is(typeof timed.jsonWriteUs, 'number')
-  t.is(typeof timed.totalUs, 'number')
-  t.is(timed.rows, 3)
-  t.true(timed.jsonBytes > 0)
-  t.true(timed.totalUs >= timed.ipcParseUs)
-  t.true(timed.totalUs >= timed.jsonWriteUs)
-
-  const rows = JSON.parse(timed.json)
-  t.is(rows.length, 3)
-  t.is(rows[0].id, 1)
-})
-
-test('arrowIpcToJsonTimed produces same JSON as arrowIpcToJson', (t) => {
-  const table = new Table({
-    id: vectorFromArray(BigInt64Array.from([1n, 2n])),
-    name: vectorFromArray(['hello', 'world']),
-  })
-  const buf = makeIpcStream(table)
-  const fast = arrowIpcToJson(buf)
-  const timed = arrowIpcToJsonTimed(buf)
-  t.is(fast, timed.json)
-})
-
-// ---------------------------------------------------------------------------
 // Output validity: ensure output is always parseable JSON
 // ---------------------------------------------------------------------------
 
@@ -931,36 +891,6 @@ test('columns: output is smaller than row-object format', (t) => {
   const rowFormat = arrowIpcToJson(buf)
   const colFormat = arrowIpcToJsonColumns(buf)
   t.true(colFormat.length < rowFormat.length, `columnar (${colFormat.length}) should be smaller than row (${rowFormat.length})`)
-})
-
-// ---------------------------------------------------------------------------
-// arrowIpcToJsonColumnsTimed
-// ---------------------------------------------------------------------------
-
-test('columns: timed returns correct structure', (t) => {
-  const table = new Table({
-    id: vectorFromArray(Int32Array.from([1, 2, 3])),
-    name: vectorFromArray(['a', 'b', 'c']),
-  })
-  const timed = arrowIpcToJsonColumnsTimed(makeIpcStream(table))
-
-  t.is(typeof timed.json, 'string')
-  t.is(typeof timed.ipcParseUs, 'number')
-  t.is(typeof timed.jsonWriteUs, 'number')
-  t.is(typeof timed.totalUs, 'number')
-  t.is(timed.rows, 3)
-  t.true(timed.jsonBytes > 0)
-  t.true(timed.totalUs >= timed.ipcParseUs)
-  t.true(timed.totalUs >= timed.jsonWriteUs)
-})
-
-test('columns: timed produces same JSON as arrowIpcToJsonColumns', (t) => {
-  const table = new Table({
-    id: vectorFromArray(Int32Array.from([1, 2])),
-    name: vectorFromArray(['hello', 'world']),
-  })
-  const buf = makeIpcStream(table)
-  t.is(arrowIpcToJsonColumns(buf), arrowIpcToJsonColumnsTimed(buf).json)
 })
 
 // ---------------------------------------------------------------------------

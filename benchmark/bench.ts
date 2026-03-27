@@ -15,7 +15,7 @@ import {
 } from 'apache-arrow'
 import { Bench } from 'tinybench'
 
-import { arrowIpcToJson, arrowIpcToJsonTimed } from '../index.js'
+import { arrowIpcToJson, arrowIpcToJsonColumns } from '../index.js'
 
 // Build a table that resembles OSM tile data
 const NUM_ROWS = 5000
@@ -64,8 +64,8 @@ const table = new Table({
 const ipcBuffer = Buffer.from(tableToIPC(table, 'stream'))
 console.log(`Benchmark data: ${NUM_ROWS} rows, ${(ipcBuffer.length / 1024).toFixed(1)} KB IPC`)
 
-// JS baseline: parse IPC + iterate rows + JSON.stringify
-function jsBaseline(buf: Uint8Array): string {
+// JS baseline: parse IPC + iterate rows → JS objects
+function jsBaselineObjects(buf: Uint8Array): Record<string, unknown>[] {
   const t = tableFromIPC(buf)
   const rows: Record<string, unknown>[] = []
   for (let r = 0; r < t.numRows; r++) {
@@ -86,33 +86,31 @@ function jsBaseline(buf: Uint8Array): string {
     }
     rows.push(row)
   }
-  return JSON.stringify(rows)
+  return rows
 }
 
-// Timing breakdown (single call, warm)
-arrowIpcToJsonTimed(ipcBuffer) // warmup
-const timed = arrowIpcToJsonTimed(ipcBuffer)
-console.log('\n--- Rust timing breakdown (single call) ---')
-console.log(`  IPC parse:    ${timed.ipcParseUs.toFixed(0)} µs`)
-console.log(`  JSON write:   ${timed.jsonWriteUs.toFixed(0)} µs`)
-console.log(`  Total:        ${timed.totalUs.toFixed(0)} µs`)
-console.log(`  Rows: ${timed.rows}, JSON size: ${(timed.jsonBytes / 1024).toFixed(1)} KB`)
-console.log(
-  `  Breakdown: ipc=${((timed.ipcParseUs / timed.totalUs) * 100).toFixed(1)}%` +
-    ` write=${((timed.jsonWriteUs / timed.totalUs) * 100).toFixed(1)}%`,
-)
-console.log()
+// Warmup + size comparison
+arrowIpcToJson(ipcBuffer)
+arrowIpcToJsonColumns(ipcBuffer)
+const rowJson = arrowIpcToJson(ipcBuffer)
+const colJson = arrowIpcToJsonColumns(ipcBuffer)
+const reduction = ((1 - colJson.length / rowJson.length) * 100).toFixed(1)
+console.log(`  Row-object JSON: ${(rowJson.length / 1024).toFixed(1)} KB`)
+console.log(`  Columnar JSON:   ${(colJson.length / 1024).toFixed(1)} KB (${reduction}% smaller)\n`)
 
 const b = new Bench({ warmupIterations: 5 })
 
-b.add('Rust arrowIpcToJson', () => {
+b.add('Rust columnar', () => {
+  arrowIpcToJsonColumns(ipcBuffer)
+})
+
+b.add('Rust row-object', () => {
   arrowIpcToJson(ipcBuffer)
 })
 
-b.add('JS tableFromIPC + JSON.stringify', () => {
-  jsBaseline(ipcBuffer)
+b.add('JS apache-arrow + JSON.stringify', () => {
+  JSON.stringify(jsBaselineObjects(ipcBuffer))
 })
 
 await b.run()
-
 console.table(b.table())

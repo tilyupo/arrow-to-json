@@ -18,9 +18,20 @@ use napi_derive::napi;
 // JSON string escaping
 // ---------------------------------------------------------------------------
 
+#[inline]
 fn write_json_str(buf: &mut String, s: &str) {
   buf.push('"');
   let bytes = s.as_bytes();
+  if !bytes.iter().any(|&b| b < 0x20 || b == b'"' || b == b'\\') {
+    buf.push_str(s);
+  } else {
+    write_json_str_escaped(buf, s, bytes);
+  }
+  buf.push('"');
+}
+
+#[cold]
+fn write_json_str_escaped(buf: &mut String, s: &str, bytes: &[u8]) {
   let mut start = 0;
   for (i, &b) in bytes.iter().enumerate() {
     let esc: &str = match b {
@@ -44,7 +55,6 @@ fn write_json_str(buf: &mut String, s: &str) {
     start = i + 1;
   }
   buf.push_str(&s[start..]);
-  buf.push('"');
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +144,7 @@ fn try_map_utf8<'a>(col: &'a dyn Array, entry_field: &Field) -> ColWriter<'a> {
 // data_type() matching + downcast_ref.
 // ---------------------------------------------------------------------------
 
+#[inline]
 fn write_col(writer: &ColWriter, row: usize, buf: &mut String) {
   match writer {
     ColWriter::Bool(a) => {
@@ -213,6 +224,7 @@ fn write_f64_val(v: f64, buf: &mut String) {
   }
 }
 
+#[inline]
 fn write_map_utf8_utf8(
   ma: &MapArray,
   keys: &StringArray,
@@ -245,6 +257,7 @@ fn write_map_utf8_utf8(
   buf.push('}');
 }
 
+#[inline]
 fn write_list_i64(
   list: &ListArray,
   values: &arrow_array::Int64Array,
@@ -657,6 +670,93 @@ fn write_batches_json(batches: &[RecordBatch], buf: &mut String) {
 // leading to proportionally faster JSON.parse on the JS side.
 // ---------------------------------------------------------------------------
 
+/// Write all values of a single column across batches into the buffer.
+/// The enum match happens ONCE per column (not per-row), and the null/no-null
+/// paths are split to avoid a branch on every row when there are no nulls.
+fn write_column_all(
+  writer: &ColWriter,
+  col: &dyn Array,
+  buf: &mut String,
+  first_val: &mut bool,
+) {
+  let n = col.len();
+  if n == 0 {
+    return;
+  }
+  let has_nulls = col.null_count() > 0;
+
+  macro_rules! emit_rows {
+    (|$row:ident| $body:expr) => {
+      if has_nulls {
+        for $row in 0..n {
+          if !*first_val {
+            buf.push(',');
+          } else {
+            *first_val = false;
+          }
+          if col.is_null($row) {
+            buf.push_str("null");
+          } else {
+            $body
+          }
+        }
+      } else {
+        for $row in 0..n {
+          if !*first_val {
+            buf.push(',');
+          } else {
+            *first_val = false;
+          }
+          $body
+        }
+      }
+    };
+  }
+
+  match writer {
+    ColWriter::Bool(a) => emit_rows!(|row| {
+      buf.push_str(if a.value(row) { "true" } else { "false" });
+    }),
+    ColWriter::I8(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::I16(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::I32(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::I64(a) => emit_rows!(|row| write_i64_val(a.value(row), buf)),
+    ColWriter::U8(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::U16(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::U32(a) => emit_rows!(|row| {
+      let mut b = itoa::Buffer::new();
+      buf.push_str(b.format(a.value(row)));
+    }),
+    ColWriter::U64(a) => emit_rows!(|row| write_u64_val(a.value(row), buf)),
+    ColWriter::F32(a) => emit_rows!(|row| write_f64_val(a.value(row) as f64, buf)),
+    ColWriter::F64(a) => emit_rows!(|row| write_f64_val(a.value(row), buf)),
+    ColWriter::Utf8(a) => emit_rows!(|row| write_json_str(buf, a.value(row))),
+    ColWriter::LargeUtf8(a) => emit_rows!(|row| write_json_str(buf, a.value(row))),
+    ColWriter::MapUtf8Utf8 { ma, keys, vals } => {
+      emit_rows!(|row| write_map_utf8_utf8(ma, keys, vals, row, buf))
+    }
+    ColWriter::ListI64 { list, values } => {
+      emit_rows!(|row| write_list_i64(list, values, row, buf))
+    }
+    ColWriter::Generic(a) => emit_rows!(|row| write_value(*a, row, buf)),
+  }
+}
+
 fn write_batches_json_columns(batches: &[RecordBatch], buf: &mut String) {
   buf.push('{');
 
@@ -679,19 +779,7 @@ fn write_batches_json_columns(batches: &[RecordBatch], buf: &mut String) {
     for batch in batches {
       let col = batch.column(fi).as_ref();
       let writer = resolve_writer(col);
-      let has_nulls = col.null_count() > 0;
-
-      for row in 0..batch.num_rows() {
-        if !first_val {
-          buf.push(',');
-        }
-        first_val = false;
-        if has_nulls && col.is_null(row) {
-          buf.push_str("null");
-        } else {
-          write_col(&writer, row, buf);
-        }
-      }
+      write_column_all(&writer, col, buf, &mut first_val);
     }
 
     buf.push(']');
@@ -759,44 +847,6 @@ pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<String> {
   Ok(buf)
 }
 
-#[napi(object)]
-pub struct TimedResult {
-  pub json: String,
-  pub ipc_parse_us: f64,
-  pub json_write_us: f64,
-  pub total_us: f64,
-  pub rows: u32,
-  pub json_bytes: u32,
-}
-
-#[napi]
-pub fn arrow_ipc_to_json_timed(data: Buffer) -> napi::Result<TimedResult> {
-  let t_total = std::time::Instant::now();
-  let bytes = data.as_ref();
-
-  let t_ipc = std::time::Instant::now();
-  let batches = read_batches(bytes)?;
-  let ipc_parse_us = t_ipc.elapsed().as_micros() as f64;
-
-  let t_write = std::time::Instant::now();
-  let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-  let mut buf = String::with_capacity(total_rows * 128);
-  write_batches_json(&batches, &mut buf);
-  let json_write_us = t_write.elapsed().as_micros() as f64;
-
-  let json_bytes = buf.len() as u32;
-  let total_us = t_total.elapsed().as_micros() as f64;
-
-  Ok(TimedResult {
-    json: buf,
-    ipc_parse_us,
-    json_write_us,
-    total_us,
-    rows: total_rows as u32,
-    json_bytes,
-  })
-}
-
 /// Converts Arrow IPC bytes to a columnar JSON string.
 ///
 /// Output format: `{"col1":[v1,v2,...],"col2":[v1,v2,...],...}`
@@ -816,32 +866,4 @@ pub fn arrow_ipc_to_json_columns(data: Buffer) -> napi::Result<String> {
   let mut buf = String::with_capacity(total_rows * 96);
   write_batches_json_columns(&batches, &mut buf);
   Ok(buf)
-}
-
-#[napi]
-pub fn arrow_ipc_to_json_columns_timed(data: Buffer) -> napi::Result<TimedResult> {
-  let t_total = std::time::Instant::now();
-  let bytes = data.as_ref();
-
-  let t_ipc = std::time::Instant::now();
-  let batches = read_batches(bytes)?;
-  let ipc_parse_us = t_ipc.elapsed().as_micros() as f64;
-
-  let t_write = std::time::Instant::now();
-  let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-  let mut buf = String::with_capacity(total_rows * 96);
-  write_batches_json_columns(&batches, &mut buf);
-  let json_write_us = t_write.elapsed().as_micros() as f64;
-
-  let json_bytes = buf.len() as u32;
-  let total_us = t_total.elapsed().as_micros() as f64;
-
-  Ok(TimedResult {
-    json: buf,
-    ipc_parse_us,
-    json_write_us,
-    total_us,
-    rows: total_rows as u32,
-    json_bytes,
-  })
 }
