@@ -118,14 +118,8 @@ fn try_map_utf8<'a>(col: &'a dyn Array, entry_field: &Field) -> ColWriter<'a> {
       let ma = col.as_any().downcast_ref::<MapArray>().unwrap();
       let entries = ma.entries();
       if let (Some(keys), Some(vals)) = (
-        entries
-          .column(0)
-          .as_any()
-          .downcast_ref::<StringArray>(),
-        entries
-          .column(1)
-          .as_any()
-          .downcast_ref::<StringArray>(),
+        entries.column(0).as_any().downcast_ref::<StringArray>(),
+        entries.column(1).as_any().downcast_ref::<StringArray>(),
       ) {
         return ColWriter::MapUtf8Utf8 { ma, keys, vals };
       }
