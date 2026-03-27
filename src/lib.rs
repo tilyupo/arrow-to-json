@@ -648,66 +648,56 @@ fn write_batches_json(batches: &[RecordBatch], buf: &mut String) {
 }
 
 // ---------------------------------------------------------------------------
-// Batch → JSON columnar writer (array-of-arrays format)
+// Batch → JSON columnar writer (object-of-arrays format)
 //
-// Output: [["col1","col2",...],[v1,v2,...],[v1,v2,...],...]
-// First element is the header (column names). Each subsequent element is
-// a positional value array. Nulls and empty maps are written as `null`.
+// Output: {"col1":[v1,v2,...],"col2":[v1,v2,...], ...}
+// Each key is a column name, each value is a flat array of all row values
+// for that column across all batches. Nulls and empty maps are `null`.
 // This format eliminates repeated key strings and is ~30-40% smaller,
 // leading to proportionally faster JSON.parse on the JS side.
 // ---------------------------------------------------------------------------
 
-struct ColInfoOnly<'a> {
-  writer: ColWriter<'a>,
-  has_nulls: bool,
-  col: &'a dyn Array,
-}
-
 fn write_batches_json_columns(batches: &[RecordBatch], buf: &mut String) {
-  buf.push('[');
+  buf.push('{');
 
-  if let Some(first_batch) = batches.first() {
-    buf.push('[');
-    for (i, field) in first_batch.schema().fields().iter().enumerate() {
-      if i > 0 {
-        buf.push(',');
-      }
-      write_json_str(buf, field.name());
+  let Some(first_batch) = batches.first() else {
+    buf.push('}');
+    return;
+  };
+
+  let schema = first_batch.schema();
+  let num_fields = schema.fields().len();
+
+  for fi in 0..num_fields {
+    if fi > 0 {
+      buf.push(',');
     }
+    write_json_str(buf, schema.field(fi).name());
+    buf.push_str(":[");
+
+    let mut first_val = true;
+    for batch in batches {
+      let col = batch.column(fi).as_ref();
+      let writer = resolve_writer(col);
+      let has_nulls = col.null_count() > 0;
+
+      for row in 0..batch.num_rows() {
+        if !first_val {
+          buf.push(',');
+        }
+        first_val = false;
+        if has_nulls && col.is_null(row) {
+          buf.push_str("null");
+        } else {
+          write_col(&writer, row, buf);
+        }
+      }
+    }
+
     buf.push(']');
   }
 
-  for batch in batches {
-    let num_rows = batch.num_rows();
-
-    let cols: Vec<ColInfoOnly> = (0..batch.num_columns())
-      .map(|i| {
-        let col = batch.column(i).as_ref();
-        ColInfoOnly {
-          writer: resolve_writer(col),
-          has_nulls: col.null_count() > 0,
-          col,
-        }
-      })
-      .collect();
-
-    for row in 0..num_rows {
-      buf.push_str(",[");
-      for (ci, cm) in cols.iter().enumerate() {
-        if ci > 0 {
-          buf.push(',');
-        }
-        if cm.has_nulls && cm.col.is_null(row) {
-          buf.push_str("null");
-        } else {
-          write_col(&cm.writer, row, buf);
-        }
-      }
-      buf.push(']');
-    }
-  }
-
-  buf.push(']');
+  buf.push('}');
 }
 
 // ---------------------------------------------------------------------------
@@ -809,12 +799,12 @@ pub fn arrow_ipc_to_json_timed(data: Buffer) -> napi::Result<TimedResult> {
 
 /// Converts Arrow IPC bytes to a columnar JSON string.
 ///
-/// Output format: `[["col1","col2",...],[v1,v2,...],[v1,v2,...],...]`
+/// Output format: `{"col1":[v1,v2,...],"col2":[v1,v2,...],...}`
 ///
-/// The first element is a header array of column names. Each subsequent
-/// element is a positional value array (one per row). This format is
-/// ~30-40% smaller than the row-object format because column names appear
-/// only once, leading to proportionally faster `JSON.parse` on the JS side.
+/// Each key is a column name, each value is a flat array of all row values
+/// for that column. This format is ~30-40% smaller than the row-object
+/// format because column names appear only once, leading to proportionally
+/// faster `JSON.parse` on the JS side.
 ///
 /// Null values and empty maps are written as `null`.
 #[napi]

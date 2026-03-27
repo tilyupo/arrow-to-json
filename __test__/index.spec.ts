@@ -684,12 +684,13 @@ test('deterministic output across multiple calls', (t) => {
 })
 
 // ===========================================================================
-// arrowIpcToJsonColumns — columnar (array-of-arrays) format
+// arrowIpcToJsonColumns — columnar (object-of-arrays) format
 // ===========================================================================
 
-function parseColumns(buf: Buffer): { headers: string[]; rows: unknown[][] } {
-  const data: unknown[][] = JSON.parse(arrowIpcToJsonColumns(buf))
-  return { headers: data[0] as string[], rows: data.slice(1) }
+type ColumnarResult = Record<string, unknown[]>
+
+function parseCols(buf: Buffer): ColumnarResult {
+  return JSON.parse(arrowIpcToJsonColumns(buf))
 }
 
 // ---------------------------------------------------------------------------
@@ -704,19 +705,17 @@ test('columns: throws on invalid input', (t) => {
   t.throws(() => arrowIpcToJsonColumns(Buffer.from('not arrow data')))
 })
 
-test('columns: empty table returns header only', (t) => {
+test('columns: empty table returns empty arrays', (t) => {
   const table = new Table({ id: vectorFromArray(Int32Array.from([])) })
-  const { headers, rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(headers, ['id'])
-  t.is(rows.length, 0)
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(Object.keys(cols), ['id'])
+  t.deepEqual(cols.id, [])
 })
 
 test('columns: single-row table', (t) => {
   const table = new Table({ x: vectorFromArray(Int32Array.from([42])) })
-  const { headers, rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(headers, ['x'])
-  t.is(rows.length, 1)
-  t.deepEqual(rows[0], [42])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols, { x: [42] })
 })
 
 test('columns: stream and file produce identical output', (t) => {
@@ -728,17 +727,17 @@ test('columns: stream and file produce identical output', (t) => {
 })
 
 // ---------------------------------------------------------------------------
-// Columnar: header row contains correct column names
+// Columnar: keys match column names
 // ---------------------------------------------------------------------------
 
-test('columns: header contains all column names in order', (t) => {
+test('columns: keys match column names in order', (t) => {
   const table = new Table({
     alpha: vectorFromArray(Int32Array.from([1])),
     beta: vectorFromArray(['x']),
     gamma: vectorFromArray(Float64Array.from([1.5])),
   })
-  const { headers } = parseColumns(makeIpcStream(table))
-  t.deepEqual(headers, ['alpha', 'beta', 'gamma'])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(Object.keys(cols), ['alpha', 'beta', 'gamma'])
 })
 
 // ---------------------------------------------------------------------------
@@ -747,39 +746,39 @@ test('columns: header contains all column names in order', (t) => {
 
 test('columns: Int32 values', (t) => {
   const table = new Table({ v: vectorFromArray(Int32Array.from([1, -2, 3])) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [[1], [-2], [3]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [1, -2, 3])
 })
 
 test('columns: Float64 values', (t) => {
   const table = new Table({ v: vectorFromArray(Float64Array.from([1.5, 2.5])) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [[1.5], [2.5]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [1.5, 2.5])
 })
 
 test('columns: Boolean values', (t) => {
   const table = new Table({ v: vectorFromArray([true, false], new Bool()) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [[true], [false]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [true, false])
 })
 
 test('columns: Utf8 values', (t) => {
   const table = new Table({ v: vectorFromArray(['hello', 'world']) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [['hello'], ['world']])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, ['hello', 'world'])
 })
 
 test('columns: Int64 safe range as number', (t) => {
   const table = new Table({ v: vectorFromArray(BigInt64Array.from([100n, -200n])) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [[100], [-200]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [100, -200])
 })
 
 test('columns: Int64 exceeding 2^53 as string', (t) => {
   const over = 2n ** 53n + 1n
   const table = new Table({ v: vectorFromArray(BigInt64Array.from([over])) })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows, [[over.toString()]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [over.toString()])
 })
 
 // ---------------------------------------------------------------------------
@@ -791,21 +790,19 @@ test('columns: null values are written as null (not omitted)', (t) => {
     id: vectorFromArray(Int32Array.from([1, 2, 3])),
     name: vectorFromArray(['alice', null, 'charlie']),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.is(rows.length, 3)
-  t.deepEqual(rows[0], [1, 'alice'])
-  t.deepEqual(rows[1], [1 + 1, null])
-  t.deepEqual(rows[2], [3, 'charlie'])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.id, [1, 2, 3])
+  t.deepEqual(cols.name, ['alice', null, 'charlie'])
 })
 
-test('columns: all-null row has null for every position', (t) => {
+test('columns: all-null column', (t) => {
   const table = new Table({
-    a: vectorFromArray([null, 'x']),
-    b: vectorFromArray([null, 'y']),
+    a: vectorFromArray([null, null]),
+    b: vectorFromArray(['x', 'y']),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows[0], [null, null])
-  t.deepEqual(rows[1], ['x', 'y'])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.a, [null, null])
+  t.deepEqual(cols.b, ['x', 'y'])
 })
 
 // ---------------------------------------------------------------------------
@@ -816,12 +813,8 @@ test('columns: NaN/Infinity become null', (t) => {
   const table = new Table({
     v: vectorFromArray(Float64Array.from([1.5, NaN, Infinity, -Infinity, 2.5])),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.is(rows[0][0], 1.5)
-  t.is(rows[1][0], null)
-  t.is(rows[2][0], null)
-  t.is(rows[3][0], null)
-  t.is(rows[4][0], 2.5)
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [1.5, null, null, null, 2.5])
 })
 
 // ---------------------------------------------------------------------------
@@ -838,10 +831,8 @@ test('columns: Map<Utf8,Utf8> as object, empty map as null', (t) => {
       MAP_TYPE,
     ),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows[0], [{ k: 'v' }])
-  t.deepEqual(rows[1], [null])
-  t.deepEqual(rows[2], [null])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.tags, [{ k: 'v' }, null, null])
 })
 
 test('columns: List<Int64> as array', (t) => {
@@ -849,10 +840,8 @@ test('columns: List<Int64> as array', (t) => {
   const table = new Table({
     v: vectorFromArray([[1n, 2n], null, [3n]], LIST_TYPE),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows[0], [[1, 2]])
-  t.deepEqual(rows[1], [null])
-  t.deepEqual(rows[2], [[3]])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.v, [[1, 2], null, [3]])
 })
 
 test('columns: Struct column', (t) => {
@@ -860,9 +849,8 @@ test('columns: Struct column', (t) => {
   const table = new Table({
     s: vectorFromArray([{ x: 1, y: 'a' }, { x: 2, y: 'b' }], STRUCT_TYPE),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows[0], [{ x: 1, y: 'a' }])
-  t.deepEqual(rows[1], [{ x: 2, y: 'b' }])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.s, [{ x: 1, y: 'a' }, { x: 2, y: 'b' }])
 })
 
 test('columns: List<Struct> (members pattern)', (t) => {
@@ -878,9 +866,8 @@ test('columns: List<Struct> (members pattern)', (t) => {
       MEMBERS_TYPE,
     ),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(rows[0], [[{ type: 'node', ref: 100, role: 'stop' }]])
-  t.deepEqual(rows[1], [null])
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.members, [[{ type: 'node', ref: 100, role: 'stop' }], null])
 })
 
 // ---------------------------------------------------------------------------
@@ -916,31 +903,17 @@ test('columns: OSM-like table with all column types', (t) => {
     ),
   })
 
-  const { headers, rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(headers, ['id', 'type', 'lat', 'lon', 'version', 'tags', 'nds', 'members'])
-  t.is(rows.length, 3)
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(Object.keys(cols), ['id', 'type', 'lat', 'lon', 'version', 'tags', 'nds', 'members'])
 
-  // Node: id=1001, type=1, lat=48.123, lon=11.456, version=1, tags={highway:primary}, nds=null, members=null
-  t.is(rows[0][0], 1001)
-  t.is(rows[0][1], 1)
-  t.is(rows[0][2], 48.123)
-  t.is(rows[0][3], 11.456)
-  t.is(rows[0][4], 1)
-  t.deepEqual(rows[0][5], { highway: 'primary' })
-  t.is(rows[0][6], null)
-  t.is(rows[0][7], null)
-
-  // Way: nds=[100,200,300]
-  t.is(rows[1][0], 1002)
-  t.deepEqual(rows[1][5], { name: 'Test Way' })
-  t.deepEqual(rows[1][6], [100, 200, 300])
-  t.is(rows[1][7], null)
-
-  // Relation: members=[{type:way,ref:500,role:outer}]
-  t.is(rows[2][0], 1003)
-  t.is(rows[2][5], null)
-  t.is(rows[2][6], null)
-  t.deepEqual(rows[2][7], [{ type: 'way', ref: 500, role: 'outer' }])
+  t.deepEqual(cols.id, [1001, 1002, 1003])
+  t.deepEqual(cols.type, [1, 2, 3])
+  t.deepEqual(cols.lat, [48.123, 0, 0])
+  t.deepEqual(cols.lon, [11.456, 0, 0])
+  t.deepEqual(cols.version, [1, 3, 1])
+  t.deepEqual(cols.tags, [{ highway: 'primary' }, { name: 'Test Way' }, null])
+  t.deepEqual(cols.nds, [null, [100, 200, 300], null])
+  t.deepEqual(cols.members, [null, null, [{ type: 'way', ref: 500, role: 'outer' }]])
 })
 
 // ---------------------------------------------------------------------------
@@ -998,10 +971,10 @@ test('columns: JSON-special characters in strings', (t) => {
   const table = new Table({
     s: vectorFromArray(['has "quotes"', 'back\\slash', 'new\nline']),
   })
-  const { rows } = parseColumns(makeIpcStream(table))
-  t.is(rows[0][0], 'has "quotes"')
-  t.is(rows[1][0], 'back\\slash')
-  t.is(rows[2][0], 'new\nline')
+  const cols = parseCols(makeIpcStream(table))
+  t.is(cols.s[0], 'has "quotes"')
+  t.is(cols.s[1], 'back\\slash')
+  t.is(cols.s[2], 'new\nline')
 })
 
 // ---------------------------------------------------------------------------
@@ -1014,9 +987,9 @@ test('columns: valid JSON for large row count', (t) => {
     id: vectorFromArray(Int32Array.from(Array.from({ length: n }, (_, i) => i))),
     val: vectorFromArray(Float64Array.from(Array.from({ length: n }, (_, i) => i * 0.1))),
   })
-  const { headers, rows } = parseColumns(makeIpcStream(table))
-  t.deepEqual(headers, ['id', 'val'])
-  t.is(rows.length, n)
-  t.is(rows[0][0], 0)
-  t.is(rows[n - 1][0], n - 1)
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(Object.keys(cols), ['id', 'val'])
+  t.is(cols.id.length, n)
+  t.is(cols.id[0], 0)
+  t.is(cols.id[n - 1], n - 1)
 })
