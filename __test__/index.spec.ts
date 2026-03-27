@@ -29,17 +29,6 @@ test('throws on invalid input', (t) => {
   t.throws(() => arrowIpcToJson(Buffer.from('not arrow data')))
 })
 
-test('returns an array of objects directly (no JSON.parse needed)', (t) => {
-  const table = new Table({
-    id: vectorFromArray(Int32Array.from([1])),
-  })
-
-  const result = arrowIpcToJson(makeIpcBytes(table))
-  t.true(Array.isArray(result))
-  t.is(result.length, 1)
-  t.is(typeof result[0], 'object')
-})
-
 test('decodes simple scalar columns', (t) => {
   const table = new Table({
     id: vectorFromArray(Int32Array.from([1, 2, 3])),
@@ -47,7 +36,8 @@ test('decodes simple scalar columns', (t) => {
     score: vectorFromArray(Float64Array.from([9.5, 8.0, 7.3])),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table))
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<Record<string, unknown>>
 
   t.is(rows.length, 3)
   t.is(rows[0].id, 1)
@@ -63,7 +53,8 @@ test('decodes Int64 values within safe range as numbers', (t) => {
     big: vectorFromArray(BigInt64Array.from([100n, -200n, 42n])),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table))
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<Record<string, unknown>>
 
   t.is(rows.length, 3)
   t.is(rows[0].big, 100)
@@ -71,7 +62,7 @@ test('decodes Int64 values within safe range as numbers', (t) => {
   t.is(rows[2].big, 42)
 })
 
-test('decodes Map<Utf8, Utf8> as plain object', (t) => {
+test('decodes Map<Utf8, Utf8> as JSON object', (t) => {
   const TAGS_TYPE = new ArrowMap(
     new Field(
       'entries',
@@ -94,7 +85,8 @@ test('decodes Map<Utf8, Utf8> as plain object', (t) => {
     tags: vectorFromArray(tagsArr, TAGS_TYPE),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table)) as Array<Record<string, any>>
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<Record<string, any>>
 
   t.is(rows.length, 3)
   t.deepEqual(rows[0].tags, { highway: 'primary', name: 'Main St' })
@@ -112,7 +104,8 @@ test('decodes List<Int64> as array of numbers', (t) => {
     nds: vectorFromArray(ndsArr, NDS_TYPE),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table)) as Array<Record<string, any>>
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<Record<string, any>>
 
   t.is(rows.length, 3)
   t.deepEqual(rows[0].nds, [1, 2, 3])
@@ -141,7 +134,8 @@ test('decodes nested Struct in List', (t) => {
     members: vectorFromArray(membersArr, MEMBERS_TYPE),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table)) as Array<Record<string, any>>
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<Record<string, any>>
 
   t.is(rows.length, 2)
   t.deepEqual(rows[0].members, [
@@ -156,7 +150,8 @@ test('handles empty table', (t) => {
     id: vectorFromArray(Int32Array.from([])),
   })
 
-  const rows = arrowIpcToJson(makeIpcBytes(table))
+  const json = arrowIpcToJson(makeIpcBytes(table))
+  const rows = JSON.parse(json) as Array<unknown>
 
   t.is(rows.length, 0)
 })

@@ -57,3 +57,4 @@ const {
 })
 export default __napiModule.exports
 export const arrowIpcToJson = __napiModule.exports.arrowIpcToJson
+export const arrowIpcToJsonTimed = __napiModule.exports.arrowIpcToJsonTimed
