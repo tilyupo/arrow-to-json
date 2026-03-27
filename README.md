@@ -34,24 +34,6 @@ const cols: Record<string, unknown[]> = JSON.parse(json)
 
 Returns a JSON object where each key is a column name and each value is an array of all row values. This format is **~36% smaller** than the row-object format because column names appear only once, leading to proportionally faster `JSON.parse` on the JS side.
 
-### Profiling with timed variants
-
-Both formats have a `*Timed` variant that returns Rust-internal timing breakdown:
-
-```ts
-import { arrowIpcToJsonColumnsTimed } from 'arrow-to-json'
-
-const result = arrowIpcToJsonColumnsTimed(arrowBytes)
-// result.json        — JSON string
-// result.ipcParseUs  — microseconds spent parsing IPC bytes
-// result.jsonWriteUs — microseconds spent writing JSON
-// result.totalUs     — total microseconds (Rust wall clock)
-// result.rows        — number of rows decoded
-// result.jsonBytes   — byte length of the JSON string
-```
-
-`arrowIpcToJsonTimed` provides the same for the row-object format.
-
 ## Supported Arrow types
 
 | Arrow type                                                    | JSON representation                  |
@@ -88,25 +70,6 @@ Converts Arrow IPC bytes to a columnar JSON object.
 - **data** — `Buffer` containing Arrow IPC bytes (file or stream format)
 - **Returns** — JSON string: `{"col": [v1, v2, ...], ...}`
 - **Throws** — if the input is not valid Arrow IPC data
-
-### `arrowIpcToJsonTimed(data: Buffer): TimedResult`
-
-Same as `arrowIpcToJson` with Rust-internal timing breakdown.
-
-### `arrowIpcToJsonColumnsTimed(data: Buffer): TimedResult`
-
-Same as `arrowIpcToJsonColumns` with Rust-internal timing breakdown.
-
-```ts
-interface TimedResult {
-  json: string // the JSON string
-  ipcParseUs: number // IPC parsing time (µs)
-  jsonWriteUs: number // JSON serialization time (µs)
-  totalUs: number // total Rust wall-clock time (µs)
-  rows: number // number of rows decoded
-  jsonBytes: number // byte length of JSON output
-}
-```
 
 ## Performance
 

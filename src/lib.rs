@@ -673,12 +673,7 @@ fn write_batches_json(batches: &[RecordBatch], buf: &mut String) {
 /// Write all values of a single column across batches into the buffer.
 /// The enum match happens ONCE per column (not per-row), and the null/no-null
 /// paths are split to avoid a branch on every row when there are no nulls.
-fn write_column_all(
-  writer: &ColWriter,
-  col: &dyn Array,
-  buf: &mut String,
-  first_val: &mut bool,
-) {
+fn write_column_all(writer: &ColWriter, col: &dyn Array, buf: &mut String, first_val: &mut bool) {
   let n = col.len();
   if n == 0 {
     return;
