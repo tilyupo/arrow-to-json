@@ -110,5 +110,3 @@ const { instance: __napiInstance, module: __wasiModule, napiModule: __napiModule
 module.exports = __napiModule.exports
 module.exports.arrowIpcToJson = __napiModule.exports.arrowIpcToJson
 module.exports.arrowIpcToJsonColumns = __napiModule.exports.arrowIpcToJsonColumns
-module.exports.arrowIpcToJsonColumnsTimed = __napiModule.exports.arrowIpcToJsonColumnsTimed
-module.exports.arrowIpcToJsonTimed = __napiModule.exports.arrowIpcToJsonTimed

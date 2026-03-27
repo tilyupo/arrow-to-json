@@ -27,16 +27,3 @@ export declare function arrowIpcToJson(data: Buffer): string
  * Null values and empty maps are written as `null`.
  */
 export declare function arrowIpcToJsonColumns(data: Buffer): string
-
-export declare function arrowIpcToJsonColumnsTimed(data: Buffer): TimedResult
-
-export declare function arrowIpcToJsonTimed(data: Buffer): TimedResult
-
-export interface TimedResult {
-  json: string
-  ipcParseUs: number
-  jsonWriteUs: number
-  totalUs: number
-  rows: number
-  jsonBytes: number
-}
