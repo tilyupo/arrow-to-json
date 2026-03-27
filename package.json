@@ -10,12 +10,14 @@
   "license": "MIT",
   "browser": "browser.js",
   "keywords": [
+    "arrow",
+    "apache-arrow",
+    "ipc",
+    "json",
+    "rust",
     "napi-rs",
-    "NAPI",
-    "N-API",
-    "Rust",
-    "node-addon",
-    "node-addon-api"
+    "native",
+    "performance"
   ],
   "files": [
     "index.d.ts",
@@ -42,7 +44,7 @@
     ]
   },
   "engines": {
-    "node": ">= 10"
+    "node": ">= 18"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
