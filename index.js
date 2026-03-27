@@ -558,4 +558,6 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.arrowIpcToJson = nativeBinding.arrowIpcToJson
+module.exports.arrowIpcToJsonColumns = nativeBinding.arrowIpcToJsonColumns
+module.exports.arrowIpcToJsonColumnsTimed = nativeBinding.arrowIpcToJsonColumnsTimed
 module.exports.arrowIpcToJsonTimed = nativeBinding.arrowIpcToJsonTimed

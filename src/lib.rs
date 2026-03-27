@@ -648,6 +648,69 @@ fn write_batches_json(batches: &[RecordBatch], buf: &mut String) {
 }
 
 // ---------------------------------------------------------------------------
+// Batch → JSON columnar writer (array-of-arrays format)
+//
+// Output: [["col1","col2",...],[v1,v2,...],[v1,v2,...],...]
+// First element is the header (column names). Each subsequent element is
+// a positional value array. Nulls and empty maps are written as `null`.
+// This format eliminates repeated key strings and is ~30-40% smaller,
+// leading to proportionally faster JSON.parse on the JS side.
+// ---------------------------------------------------------------------------
+
+struct ColInfoOnly<'a> {
+  writer: ColWriter<'a>,
+  has_nulls: bool,
+  col: &'a dyn Array,
+}
+
+fn write_batches_json_columns(batches: &[RecordBatch], buf: &mut String) {
+  buf.push('[');
+
+  if let Some(first_batch) = batches.first() {
+    buf.push('[');
+    for (i, field) in first_batch.schema().fields().iter().enumerate() {
+      if i > 0 {
+        buf.push(',');
+      }
+      write_json_str(buf, field.name());
+    }
+    buf.push(']');
+  }
+
+  for batch in batches {
+    let num_rows = batch.num_rows();
+
+    let cols: Vec<ColInfoOnly> = (0..batch.num_columns())
+      .map(|i| {
+        let col = batch.column(i).as_ref();
+        ColInfoOnly {
+          writer: resolve_writer(col),
+          has_nulls: col.null_count() > 0,
+          col,
+        }
+      })
+      .collect();
+
+    for row in 0..num_rows {
+      buf.push_str(",[");
+      for (ci, cm) in cols.iter().enumerate() {
+        if ci > 0 {
+          buf.push(',');
+        }
+        if cm.has_nulls && cm.col.is_null(row) {
+          buf.push_str("null");
+        } else {
+          write_col(&cm.writer, row, buf);
+        }
+      }
+      buf.push(']');
+    }
+  }
+
+  buf.push(']');
+}
+
+// ---------------------------------------------------------------------------
 // IPC parsing
 // ---------------------------------------------------------------------------
 
@@ -729,6 +792,55 @@ pub fn arrow_ipc_to_json_timed(data: Buffer) -> napi::Result<TimedResult> {
   let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
   let mut buf = String::with_capacity(total_rows * 128);
   write_batches_json(&batches, &mut buf);
+  let json_write_us = t_write.elapsed().as_micros() as f64;
+
+  let json_bytes = buf.len() as u32;
+  let total_us = t_total.elapsed().as_micros() as f64;
+
+  Ok(TimedResult {
+    json: buf,
+    ipc_parse_us,
+    json_write_us,
+    total_us,
+    rows: total_rows as u32,
+    json_bytes,
+  })
+}
+
+/// Converts Arrow IPC bytes to a columnar JSON string.
+///
+/// Output format: `[["col1","col2",...],[v1,v2,...],[v1,v2,...],...]`
+///
+/// The first element is a header array of column names. Each subsequent
+/// element is a positional value array (one per row). This format is
+/// ~30-40% smaller than the row-object format because column names appear
+/// only once, leading to proportionally faster `JSON.parse` on the JS side.
+///
+/// Null values and empty maps are written as `null`.
+#[napi]
+pub fn arrow_ipc_to_json_columns(data: Buffer) -> napi::Result<String> {
+  let bytes = data.as_ref();
+  let batches = read_batches(bytes)?;
+
+  let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+  let mut buf = String::with_capacity(total_rows * 96);
+  write_batches_json_columns(&batches, &mut buf);
+  Ok(buf)
+}
+
+#[napi]
+pub fn arrow_ipc_to_json_columns_timed(data: Buffer) -> napi::Result<TimedResult> {
+  let t_total = std::time::Instant::now();
+  let bytes = data.as_ref();
+
+  let t_ipc = std::time::Instant::now();
+  let batches = read_batches(bytes)?;
+  let ipc_parse_us = t_ipc.elapsed().as_micros() as f64;
+
+  let t_write = std::time::Instant::now();
+  let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+  let mut buf = String::with_capacity(total_rows * 96);
+  write_batches_json_columns(&batches, &mut buf);
   let json_write_us = t_write.elapsed().as_micros() as f64;
 
   let json_bytes = buf.len() as u32;

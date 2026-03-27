@@ -14,6 +14,22 @@
  */
 export declare function arrowIpcToJson(data: Buffer): string
 
+/**
+ * Converts Arrow IPC bytes to a columnar JSON string.
+ *
+ * Output format: `[["col1","col2",...],[v1,v2,...],[v1,v2,...],...]`
+ *
+ * The first element is a header array of column names. Each subsequent
+ * element is a positional value array (one per row). This format is
+ * ~30-40% smaller than the row-object format because column names appear
+ * only once, leading to proportionally faster `JSON.parse` on the JS side.
+ *
+ * Null values and empty maps are written as `null`.
+ */
+export declare function arrowIpcToJsonColumns(data: Buffer): string
+
+export declare function arrowIpcToJsonColumnsTimed(data: Buffer): TimedResult
+
 export declare function arrowIpcToJsonTimed(data: Buffer): TimedResult
 
 export interface TimedResult {

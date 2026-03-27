@@ -24,7 +24,7 @@ import {
 } from 'apache-arrow'
 import test from 'ava'
 
-import { arrowIpcToJson, arrowIpcToJsonTimed } from '../index'
+import { arrowIpcToJson, arrowIpcToJsonColumns, arrowIpcToJsonColumnsTimed, arrowIpcToJsonTimed } from '../index'
 
 function makeIpcStream(table: Table): Buffer {
   return Buffer.from(tableToIPC(table, 'stream'))
@@ -681,4 +681,342 @@ test('deterministic output across multiple calls', (t) => {
   const c = arrowIpcToJson(buf)
   t.is(a, b)
   t.is(b, c)
+})
+
+// ===========================================================================
+// arrowIpcToJsonColumns — columnar (array-of-arrays) format
+// ===========================================================================
+
+function parseColumns(buf: Buffer): { headers: string[]; rows: unknown[][] } {
+  const data: unknown[][] = JSON.parse(arrowIpcToJsonColumns(buf))
+  return { headers: data[0] as string[], rows: data.slice(1) }
+}
+
+// ---------------------------------------------------------------------------
+// Columnar: basic functionality
+// ---------------------------------------------------------------------------
+
+test('columns: is a function', (t) => {
+  t.is(typeof arrowIpcToJsonColumns, 'function')
+})
+
+test('columns: throws on invalid input', (t) => {
+  t.throws(() => arrowIpcToJsonColumns(Buffer.from('not arrow data')))
+})
+
+test('columns: empty table returns header only', (t) => {
+  const table = new Table({ id: vectorFromArray(Int32Array.from([])) })
+  const { headers, rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(headers, ['id'])
+  t.is(rows.length, 0)
+})
+
+test('columns: single-row table', (t) => {
+  const table = new Table({ x: vectorFromArray(Int32Array.from([42])) })
+  const { headers, rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(headers, ['x'])
+  t.is(rows.length, 1)
+  t.deepEqual(rows[0], [42])
+})
+
+test('columns: stream and file produce identical output', (t) => {
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from([1, 2, 3])),
+    name: vectorFromArray(['a', 'b', 'c']),
+  })
+  t.is(arrowIpcToJsonColumns(makeIpcStream(table)), arrowIpcToJsonColumns(makeIpcFile(table)))
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: header row contains correct column names
+// ---------------------------------------------------------------------------
+
+test('columns: header contains all column names in order', (t) => {
+  const table = new Table({
+    alpha: vectorFromArray(Int32Array.from([1])),
+    beta: vectorFromArray(['x']),
+    gamma: vectorFromArray(Float64Array.from([1.5])),
+  })
+  const { headers } = parseColumns(makeIpcStream(table))
+  t.deepEqual(headers, ['alpha', 'beta', 'gamma'])
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: scalar types
+// ---------------------------------------------------------------------------
+
+test('columns: Int32 values', (t) => {
+  const table = new Table({ v: vectorFromArray(Int32Array.from([1, -2, 3])) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [[1], [-2], [3]])
+})
+
+test('columns: Float64 values', (t) => {
+  const table = new Table({ v: vectorFromArray(Float64Array.from([1.5, 2.5])) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [[1.5], [2.5]])
+})
+
+test('columns: Boolean values', (t) => {
+  const table = new Table({ v: vectorFromArray([true, false], new Bool()) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [[true], [false]])
+})
+
+test('columns: Utf8 values', (t) => {
+  const table = new Table({ v: vectorFromArray(['hello', 'world']) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [['hello'], ['world']])
+})
+
+test('columns: Int64 safe range as number', (t) => {
+  const table = new Table({ v: vectorFromArray(BigInt64Array.from([100n, -200n])) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [[100], [-200]])
+})
+
+test('columns: Int64 exceeding 2^53 as string', (t) => {
+  const over = 2n ** 53n + 1n
+  const table = new Table({ v: vectorFromArray(BigInt64Array.from([over])) })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows, [[over.toString()]])
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: null handling (nulls become null, not omitted)
+// ---------------------------------------------------------------------------
+
+test('columns: null values are written as null (not omitted)', (t) => {
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from([1, 2, 3])),
+    name: vectorFromArray(['alice', null, 'charlie']),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.is(rows.length, 3)
+  t.deepEqual(rows[0], [1, 'alice'])
+  t.deepEqual(rows[1], [1 + 1, null])
+  t.deepEqual(rows[2], [3, 'charlie'])
+})
+
+test('columns: all-null row has null for every position', (t) => {
+  const table = new Table({
+    a: vectorFromArray([null, 'x']),
+    b: vectorFromArray([null, 'y']),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows[0], [null, null])
+  t.deepEqual(rows[1], ['x', 'y'])
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: Float64 edge cases
+// ---------------------------------------------------------------------------
+
+test('columns: NaN/Infinity become null', (t) => {
+  const table = new Table({
+    v: vectorFromArray(Float64Array.from([1.5, NaN, Infinity, -Infinity, 2.5])),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.is(rows[0][0], 1.5)
+  t.is(rows[1][0], null)
+  t.is(rows[2][0], null)
+  t.is(rows[3][0], null)
+  t.is(rows[4][0], 2.5)
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: complex types
+// ---------------------------------------------------------------------------
+
+test('columns: Map<Utf8,Utf8> as object, empty map as null', (t) => {
+  const MAP_TYPE = new ArrowMap(
+    new Field('entries', new Struct([new Field('key', new Utf8(), false), new Field('value', new Utf8(), false)]), false) as any,
+  )
+  const table = new Table({
+    tags: vectorFromArray(
+      [new Map([['k', 'v']]), new Map<string, string>(), null],
+      MAP_TYPE,
+    ),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows[0], [{ k: 'v' }])
+  t.deepEqual(rows[1], [null])
+  t.deepEqual(rows[2], [null])
+})
+
+test('columns: List<Int64> as array', (t) => {
+  const LIST_TYPE = new List(new Field('item', new Int64()))
+  const table = new Table({
+    v: vectorFromArray([[1n, 2n], null, [3n]], LIST_TYPE),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows[0], [[1, 2]])
+  t.deepEqual(rows[1], [null])
+  t.deepEqual(rows[2], [[3]])
+})
+
+test('columns: Struct column', (t) => {
+  const STRUCT_TYPE = new Struct([new Field('x', new Int32()), new Field('y', new Utf8())])
+  const table = new Table({
+    s: vectorFromArray([{ x: 1, y: 'a' }, { x: 2, y: 'b' }], STRUCT_TYPE),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows[0], [{ x: 1, y: 'a' }])
+  t.deepEqual(rows[1], [{ x: 2, y: 'b' }])
+})
+
+test('columns: List<Struct> (members pattern)', (t) => {
+  const MEMBERS_TYPE = new List(
+    new Field(
+      'item',
+      new Struct([new Field('type', new Utf8()), new Field('ref', new Int64()), new Field('role', new Utf8())]),
+    ),
+  )
+  const table = new Table({
+    members: vectorFromArray(
+      [[{ type: 'node', ref: 100n, role: 'stop' }], null],
+      MEMBERS_TYPE,
+    ),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(rows[0], [[{ type: 'node', ref: 100, role: 'stop' }]])
+  t.deepEqual(rows[1], [null])
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: OSM-like full table
+// ---------------------------------------------------------------------------
+
+test('columns: OSM-like table with all column types', (t) => {
+  const MAP_TYPE = new ArrowMap(
+    new Field('entries', new Struct([new Field('key', new Utf8(), false), new Field('value', new Utf8(), false)]), false) as any,
+  )
+  const NDS_TYPE = new List(new Field('item', new Int64()))
+  const MEMBERS_TYPE = new List(
+    new Field(
+      'item',
+      new Struct([new Field('type', new Utf8()), new Field('ref', new Int64()), new Field('role', new Utf8())]),
+    ),
+  )
+
+  const table = new Table({
+    id: vectorFromArray(BigInt64Array.from([1001n, 1002n, 1003n])),
+    type: vectorFromArray(Int8Array.from([1, 2, 3])),
+    lat: vectorFromArray(Float64Array.from([48.123, 0, 0])),
+    lon: vectorFromArray(Float64Array.from([11.456, 0, 0])),
+    version: vectorFromArray(Int32Array.from([1, 3, 1])),
+    tags: vectorFromArray(
+      [new Map([['highway', 'primary']]), new Map([['name', 'Test Way']]), null],
+      MAP_TYPE,
+    ),
+    nds: vectorFromArray([null, [100n, 200n, 300n], null], NDS_TYPE),
+    members: vectorFromArray(
+      [null, null, [{ type: 'way', ref: 500n, role: 'outer' }]],
+      MEMBERS_TYPE,
+    ),
+  })
+
+  const { headers, rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(headers, ['id', 'type', 'lat', 'lon', 'version', 'tags', 'nds', 'members'])
+  t.is(rows.length, 3)
+
+  // Node: id=1001, type=1, lat=48.123, lon=11.456, version=1, tags={highway:primary}, nds=null, members=null
+  t.is(rows[0][0], 1001)
+  t.is(rows[0][1], 1)
+  t.is(rows[0][2], 48.123)
+  t.is(rows[0][3], 11.456)
+  t.is(rows[0][4], 1)
+  t.deepEqual(rows[0][5], { highway: 'primary' })
+  t.is(rows[0][6], null)
+  t.is(rows[0][7], null)
+
+  // Way: nds=[100,200,300]
+  t.is(rows[1][0], 1002)
+  t.deepEqual(rows[1][5], { name: 'Test Way' })
+  t.deepEqual(rows[1][6], [100, 200, 300])
+  t.is(rows[1][7], null)
+
+  // Relation: members=[{type:way,ref:500,role:outer}]
+  t.is(rows[2][0], 1003)
+  t.is(rows[2][5], null)
+  t.is(rows[2][6], null)
+  t.deepEqual(rows[2][7], [{ type: 'way', ref: 500, role: 'outer' }])
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: output is smaller than row-object format
+// ---------------------------------------------------------------------------
+
+test('columns: output is smaller than row-object format', (t) => {
+  const n = 1000
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from(Array.from({ length: n }, (_, i) => i))),
+    name: vectorFromArray(Array.from({ length: n }, (_, i) => `item_${i}`)),
+    value: vectorFromArray(Float64Array.from(Array.from({ length: n }, (_, i) => i * 0.1))),
+  })
+  const buf = makeIpcStream(table)
+  const rowFormat = arrowIpcToJson(buf)
+  const colFormat = arrowIpcToJsonColumns(buf)
+  t.true(colFormat.length < rowFormat.length, `columnar (${colFormat.length}) should be smaller than row (${rowFormat.length})`)
+})
+
+// ---------------------------------------------------------------------------
+// arrowIpcToJsonColumnsTimed
+// ---------------------------------------------------------------------------
+
+test('columns: timed returns correct structure', (t) => {
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from([1, 2, 3])),
+    name: vectorFromArray(['a', 'b', 'c']),
+  })
+  const timed = arrowIpcToJsonColumnsTimed(makeIpcStream(table))
+
+  t.is(typeof timed.json, 'string')
+  t.is(typeof timed.ipcParseUs, 'number')
+  t.is(typeof timed.jsonWriteUs, 'number')
+  t.is(typeof timed.totalUs, 'number')
+  t.is(timed.rows, 3)
+  t.true(timed.jsonBytes > 0)
+  t.true(timed.totalUs >= timed.ipcParseUs)
+  t.true(timed.totalUs >= timed.jsonWriteUs)
+})
+
+test('columns: timed produces same JSON as arrowIpcToJsonColumns', (t) => {
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from([1, 2])),
+    name: vectorFromArray(['hello', 'world']),
+  })
+  const buf = makeIpcStream(table)
+  t.is(arrowIpcToJsonColumns(buf), arrowIpcToJsonColumnsTimed(buf).json)
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: string escaping preserved
+// ---------------------------------------------------------------------------
+
+test('columns: JSON-special characters in strings', (t) => {
+  const table = new Table({
+    s: vectorFromArray(['has "quotes"', 'back\\slash', 'new\nline']),
+  })
+  const { rows } = parseColumns(makeIpcStream(table))
+  t.is(rows[0][0], 'has "quotes"')
+  t.is(rows[1][0], 'back\\slash')
+  t.is(rows[2][0], 'new\nline')
+})
+
+// ---------------------------------------------------------------------------
+// Columnar: large row count validity
+// ---------------------------------------------------------------------------
+
+test('columns: valid JSON for large row count', (t) => {
+  const n = 10000
+  const table = new Table({
+    id: vectorFromArray(Int32Array.from(Array.from({ length: n }, (_, i) => i))),
+    val: vectorFromArray(Float64Array.from(Array.from({ length: n }, (_, i) => i * 0.1))),
+  })
+  const { headers, rows } = parseColumns(makeIpcStream(table))
+  t.deepEqual(headers, ['id', 'val'])
+  t.is(rows.length, n)
+  t.is(rows[0][0], 0)
+  t.is(rows[n - 1][0], n - 1)
 })
