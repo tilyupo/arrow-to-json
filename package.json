@@ -1,6 +1,6 @@
 {
   "name": "arrow-to-json",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Convert Arrow IPC bytes to JSON using Rust (napi-rs)",
   "main": "index.js",
   "repository": {
