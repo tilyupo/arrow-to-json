@@ -12,4 +12,4 @@
  * - `Int64`/`UInt64` values exceeding 2^53 are emitted as strings.
  * - Temporal types are cast to their string representation.
  */
-export declare function arrowIpcToJson(data: Buffer): Array<Record<string, unknown>>
+export declare function arrowIpcToJson(data: Buffer): any
