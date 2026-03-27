@@ -17,7 +17,6 @@ import { Bench } from 'tinybench'
 
 import { arrowIpcToJson } from '../index.js'
 
-// Build a table that resembles OSM tile data
 const NUM_ROWS = 5000
 
 const TAGS_TYPE = new ArrowMap(
@@ -31,8 +30,8 @@ const NDS_TYPE = new List(new Field('item', new Int64()))
 
 const ids = BigInt64Array.from(Array.from({ length: NUM_ROWS }, (_, i) => BigInt(i + 1000)))
 const types = Int8Array.from(Array.from({ length: NUM_ROWS }, (_, i) => (i % 10 < 7 ? 0 : i % 10 < 9 ? 1 : 2)))
-const lats = Float64Array.from(Array.from({ length: NUM_ROWS }, (_, i) => 48.0 + (i * 0.001)))
-const lons = Float64Array.from(Array.from({ length: NUM_ROWS }, (_, i) => 11.0 + (i * 0.001)))
+const lats = Float64Array.from(Array.from({ length: NUM_ROWS }, (_, i) => 48.0 + i * 0.001))
+const lons = Float64Array.from(Array.from({ length: NUM_ROWS }, (_, i) => 11.0 + i * 0.001))
 const versions = Int32Array.from(Array.from({ length: NUM_ROWS }, () => 1))
 
 const tagsArr: Array<Map<string, string> | null> = Array.from({ length: NUM_ROWS }, (_, i) =>
@@ -64,8 +63,8 @@ const table = new Table({
 const ipcBuffer = Buffer.from(tableToIPC(table, 'stream'))
 console.log(`Benchmark data: ${NUM_ROWS} rows, ${(ipcBuffer.length / 1024).toFixed(1)} KB IPC`)
 
-// JS baseline: parse IPC + iterate rows + JSON.stringify
-function jsBaseline(buf: Uint8Array): string {
+// JS baseline: parse IPC + iterate rows → JS objects
+function jsBaseline(buf: Uint8Array): Record<string, unknown>[] {
   const t = tableFromIPC(buf)
   const rows: Record<string, unknown>[] = []
   for (let r = 0; r < t.numRows; r++) {
@@ -78,9 +77,7 @@ function jsBaseline(buf: Uint8Array): string {
         } else if (val instanceof Map) {
           row[field.name] = Object.fromEntries(val)
         } else if (typeof val === 'object' && Symbol.iterator in val) {
-          row[field.name] = Array.from(val as Iterable<unknown>, (v) =>
-            typeof v === 'bigint' ? Number(v) : v,
-          )
+          row[field.name] = Array.from(val as Iterable<unknown>, (v) => (typeof v === 'bigint' ? Number(v) : v))
         } else {
           row[field.name] = val
         }
@@ -88,16 +85,16 @@ function jsBaseline(buf: Uint8Array): string {
     }
     rows.push(row)
   }
-  return JSON.stringify(rows)
+  return rows
 }
 
 const b = new Bench({ warmupIterations: 5 })
 
-b.add('Rust arrowIpcToJson', () => {
+b.add('Rust arrowIpcToJson (→ JS objects)', () => {
   arrowIpcToJson(ipcBuffer)
 })
 
-b.add('JS tableFromIPC + JSON.stringify', () => {
+b.add('JS tableFromIPC (→ JS objects)', () => {
   jsBaseline(ipcBuffer)
 })
 

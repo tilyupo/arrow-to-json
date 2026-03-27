@@ -288,18 +288,18 @@ fn is_ipc_file(data: &[u8]) -> bool {
   data.len() >= 8 && data[..6] == *ARROW_FILE_MAGIC
 }
 
-/// Converts Arrow IPC bytes to a JSON string.
+/// Converts Arrow IPC bytes to JavaScript objects.
 ///
 /// Accepts both Arrow IPC file format and streaming format.
-/// Returns a JSON array string where each element is a row object
-/// with column names as keys.
+/// Returns an array of row objects with column names as keys,
+/// constructed directly through N-API without JSON serialization.
 ///
 /// - Null values are omitted from output objects.
-/// - `Map<Utf8, *>` columns are emitted as JSON objects.
+/// - `Map<Utf8, *>` columns are emitted as plain objects (`{key: value}`).
 /// - `Int64`/`UInt64` values exceeding 2^53 are emitted as strings.
 /// - Temporal types are cast to their string representation.
 #[napi]
-pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<String> {
+pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<Value> {
   let bytes = data.as_ref();
   let mut all_rows: Vec<Value> = Vec::new();
 
@@ -323,6 +323,5 @@ pub fn arrow_ipc_to_json(data: Buffer) -> napi::Result<String> {
     }
   }
 
-  serde_json::to_string(&all_rows)
-    .map_err(|e| napi::Error::from_reason(format!("JSON serialization failed: {e}")))
+  Ok(Value::Array(all_rows))
 }

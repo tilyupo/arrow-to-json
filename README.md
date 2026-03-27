@@ -1,6 +1,8 @@
 # arrow-to-json
 
-A native Node.js addon that converts [Apache Arrow](https://arrow.apache.org/) IPC bytes to JSON. Written in Rust using [napi-rs](https://napi.rs/) for maximum throughput — typically **5-7x faster** than parsing with the JavaScript `apache-arrow` library and serializing with `JSON.stringify`.
+A native Node.js addon that converts [Apache Arrow](https://arrow.apache.org/) IPC bytes directly into JavaScript objects. Written in Rust using [napi-rs](https://napi.rs/) for maximum throughput — typically **5-7x faster** than parsing with the JavaScript `apache-arrow` library.
+
+Objects are constructed directly through N-API — no JSON string intermediate, no `JSON.parse` needed.
 
 ## Install
 
@@ -13,15 +15,14 @@ npm install arrow-to-json
 ```ts
 import { arrowIpcToJson } from 'arrow-to-json'
 
-const json: string = arrowIpcToJson(arrowBytes)
-const rows: unknown[] = JSON.parse(json)
+const rows: Array<Record<string, unknown>> = arrowIpcToJson(arrowBytes)
 ```
 
-The function accepts a `Buffer` containing Arrow IPC bytes (file or streaming format, auto-detected) and returns a JSON string. Each element in the resulting array is a row object with column names as keys.
+The function accepts a `Buffer` containing Arrow IPC bytes (file or streaming format, auto-detected) and returns an array of row objects with column names as keys.
 
 ## Supported Arrow types
 
-| Arrow type | JSON representation |
+| Arrow type | JS representation |
 |---|---|
 | `Boolean` | `true` / `false` |
 | `Int8` .. `Int32`, `UInt8` .. `UInt32` | number |
@@ -39,14 +40,14 @@ The function accepts a `Buffer` containing Arrow IPC bytes (file or streaming fo
 
 ## API
 
-### `arrowIpcToJson(data: Buffer): string`
+### `arrowIpcToJson(data: Buffer): Array<Record<string, unknown>>`
 
-Converts Arrow IPC bytes to a JSON array string.
+Converts Arrow IPC bytes to an array of JavaScript objects.
 
 **Parameters:**
 - `data` — `Buffer` containing Arrow IPC bytes
 
-**Returns:** JSON string representing an array of row objects
+**Returns:** Array of row objects, constructed directly through N-API
 
 **Throws:** if the input is not valid Arrow IPC data
 
