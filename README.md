@@ -43,7 +43,7 @@ Returns a JSON object where each key is a column name and each value is an array
 | `Int64` / `UInt64`                                            | number if ≤ 2^53, string otherwise   |
 | `Float16` / `Float32` / `Float64`                             | number (`NaN` / `Infinity` → `null`) |
 | `Utf8` / `LargeUtf8`                                          | string (JSON-escaped)                |
-| `Binary` / `LargeBinary`                                      | array of byte values                 |
+| `Binary` / `LargeBinary`                                      | base64 string                        |
 | `List` / `LargeList` / `FixedSizeList`                        | array (recursive)                    |
 | `Struct`                                                      | object (recursive)                   |
 | `Map<Utf8, *>`                                                | object (`{key: value}`)              |
