@@ -11,6 +11,7 @@ use arrow_array::{
 };
 use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_schema::{DataType, Field};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 
@@ -427,15 +428,9 @@ fn write_value(arr: &dyn Array, row: usize, buf: &mut String) {
 }
 
 fn write_byte_array(buf: &mut String, bytes: &[u8]) {
-  buf.push('[');
-  for (i, &b) in bytes.iter().enumerate() {
-    if i > 0 {
-      buf.push(',');
-    }
-    let mut ib = itoa::Buffer::new();
-    buf.push_str(ib.format(b));
-  }
-  buf.push(']');
+  buf.push('"');
+  STANDARD.encode_string(bytes, buf);
+  buf.push('"');
 }
 
 fn write_list_value(arr: &dyn Array, row: usize, buf: &mut String) {
@@ -861,4 +856,114 @@ pub fn arrow_ipc_to_json_columns(data: Buffer) -> napi::Result<String> {
   let mut buf = String::with_capacity(total_rows * 96);
   write_batches_json_columns(&batches, &mut buf);
   Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use arrow_array::BinaryArray;
+  use arrow_schema::Schema;
+  use std::sync::Arc;
+
+  #[test]
+  fn write_byte_array_base64_hello() {
+    let mut buf = String::new();
+    write_byte_array(&mut buf, b"hello");
+    assert_eq!(buf, "\"aGVsbG8=\"");
+  }
+
+  #[test]
+  fn write_byte_array_base64_empty() {
+    let mut buf = String::new();
+    write_byte_array(&mut buf, b"");
+    assert_eq!(buf, "\"\"");
+  }
+
+  #[test]
+  fn write_byte_array_base64_all_bytes() {
+    let bytes: Vec<u8> = (0..=255).collect();
+    let mut buf = String::new();
+    write_byte_array(&mut buf, &bytes);
+    let inner = &buf[1..buf.len() - 1]; // strip quotes
+    let decoded = STANDARD.decode(inner).unwrap();
+    assert_eq!(decoded, bytes);
+  }
+
+  fn make_binary_batch(values: Vec<&[u8]>) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+      "data",
+      DataType::Binary,
+      false,
+    )]));
+    let array = BinaryArray::from(values);
+    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+  }
+
+  #[test]
+  fn binary_column_row_format() {
+    let batch = make_binary_batch(vec![b"hello", b"world"]);
+    let mut buf = String::new();
+    write_batches_json(&[batch], &mut buf);
+
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&buf).unwrap();
+    assert_eq!(parsed[0]["data"], "aGVsbG8=");
+    assert_eq!(parsed[1]["data"], "d29ybGQ=");
+  }
+
+  #[test]
+  fn binary_column_columnar_format() {
+    let batch = make_binary_batch(vec![b"hello", b"world"]);
+    let mut buf = String::new();
+    write_batches_json_columns(&[batch], &mut buf);
+
+    let parsed: serde_json::Value = serde_json::from_str(&buf).unwrap();
+    let arr = parsed["data"].as_array().unwrap();
+    assert_eq!(arr[0], "aGVsbG8=");
+    assert_eq!(arr[1], "d29ybGQ=");
+  }
+
+  #[test]
+  fn wkb_point_roundtrip() {
+    // WKB little-endian Point(10.5, 20.5)
+    let mut wkb = vec![1u8];
+    wkb.extend_from_slice(&1u32.to_le_bytes());
+    wkb.extend_from_slice(&10.5f64.to_le_bytes());
+    wkb.extend_from_slice(&20.5f64.to_le_bytes());
+
+    let batch = make_binary_batch(vec![wkb.as_slice()]);
+    let mut buf = String::new();
+    write_batches_json(&[batch], &mut buf);
+
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&buf).unwrap();
+    let b64 = parsed[0]["data"].as_str().unwrap();
+    let decoded = STANDARD.decode(b64).unwrap();
+    assert_eq!(decoded, wkb);
+    assert_eq!(decoded[0], 1); // LE
+    let lon = f64::from_le_bytes(decoded[5..13].try_into().unwrap());
+    let lat = f64::from_le_bytes(decoded[13..21].try_into().unwrap());
+    assert!((lon - 10.5).abs() < 1e-10);
+    assert!((lat - 20.5).abs() < 1e-10);
+  }
+
+  #[test]
+  fn nullable_binary_column() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+      "data",
+      DataType::Binary,
+      true,
+    )]));
+    let array = BinaryArray::from(vec![Some(b"yes".as_ref()), None, Some(b"no".as_ref())]);
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+
+    let mut buf = String::new();
+    write_batches_json(&[batch], &mut buf);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&buf).unwrap();
+    assert_eq!(parsed[0]["data"], "eWVz");
+    assert!(parsed[1].get("data").is_none()); // null omitted
+    assert_eq!(parsed[2]["data"], "bm8=");
+  }
 }

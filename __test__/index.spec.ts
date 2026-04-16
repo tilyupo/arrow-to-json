@@ -1,4 +1,5 @@
 import {
+  Binary,
   Bool,
   Dictionary,
   Field,
@@ -322,6 +323,74 @@ test('handles string that is only special characters', (t) => {
   t.is(rows[0].s, '"\\"\\n\\t"')
   t.is(rows[1].s, '\n\r\t')
   t.is(rows[2].s, '\x00\x01\x1f')
+})
+
+// ---------------------------------------------------------------------------
+// Binary type — base64 encoding
+// ---------------------------------------------------------------------------
+
+test('decodes Binary column as base64 strings', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.from('hello'), Buffer.from('world')], new Binary()),
+  })
+  const rows = parse(makeIpcStream(table))
+  t.is(rows[0].data, 'aGVsbG8=')
+  t.is(rows[1].data, 'd29ybGQ=')
+})
+
+test('decodes empty Binary as empty base64 string', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.alloc(0)], new Binary()),
+  })
+  const rows = parse(makeIpcStream(table))
+  t.is(rows[0].data, '')
+})
+
+test('nullable Binary column omits null rows', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.from('yes'), null, Buffer.from('no')], new Binary()),
+  })
+  const rows = parse(makeIpcStream(table))
+  t.is(rows[0].data, 'eWVz')
+  t.is(rows[1].data, undefined)
+  t.is(rows[2].data, 'bm8=')
+})
+
+test('Binary base64 round-trips correctly', (t) => {
+  const original = Buffer.from([0, 1, 2, 127, 128, 255])
+  const table = new Table({
+    data: vectorFromArray([original], new Binary()),
+  })
+  const rows = parse(makeIpcStream(table))
+  const decoded = Buffer.from(rows[0].data, 'base64')
+  t.deepEqual(decoded, original)
+})
+
+test('WKB Point binary round-trips through base64', (t) => {
+  const wkb = Buffer.alloc(21)
+  wkb[0] = 1 // little-endian
+  wkb.writeUInt32LE(1, 1) // Point type
+  wkb.writeDoubleLE(9.517759634793478, 5) // lon
+  wkb.writeDoubleLE(53.568285422149415, 13) // lat
+
+  const table = new Table({
+    geom: vectorFromArray([wkb], new Binary()),
+  })
+  const rows = parse(makeIpcStream(table))
+
+  const decoded = Buffer.from(rows[0].geom, 'base64')
+  t.is(decoded.length, 21)
+  t.is(decoded[0], 1)
+  t.is(decoded.readDoubleLE(5), 9.517759634793478)
+  t.is(decoded.readDoubleLE(13), 53.568285422149415)
+})
+
+test('Binary in IPC file format produces base64', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.from('test')], new Binary()),
+  })
+  const rows = parse(makeIpcFile(table))
+  t.is(rows[0].data, 'dGVzdA==')
 })
 
 // ---------------------------------------------------------------------------
@@ -802,6 +871,22 @@ test('columns: List<Int64> as array', (t) => {
   })
   const cols = parseCols(makeIpcStream(table))
   t.deepEqual(cols.v, [[1, 2], null, [3]])
+})
+
+test('columns: Binary as base64 strings', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.from('hello'), Buffer.from('world')], new Binary()),
+  })
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.data, ['aGVsbG8=', 'd29ybGQ='])
+})
+
+test('columns: nullable Binary with nulls', (t) => {
+  const table = new Table({
+    data: vectorFromArray([Buffer.from('yes'), null, Buffer.from('no')], new Binary()),
+  })
+  const cols = parseCols(makeIpcStream(table))
+  t.deepEqual(cols.data, ['eWVz', null, 'bm8='])
 })
 
 test('columns: Struct column', (t) => {
